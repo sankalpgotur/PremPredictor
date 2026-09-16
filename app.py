@@ -3,10 +3,57 @@ Streamlit UI for the EPL predictor.
 Run locally:  streamlit run app.py
 Deploy free:  push to GitHub -> share.streamlit.io -> pick app.py
 """
+import hmac
+import os
+
 import streamlit as st
 from epl_predictor import load_data, load_model, predict_fixture, _team_long
 
 st.set_page_config(page_title="EPL Match Predictor", page_icon="⚽")
+
+MAX_ATTEMPTS = 5
+
+
+def _expected_passcode():
+    """Passcode comes from secrets/env, never from the source (repo is public)."""
+    try:
+        code = st.secrets.get("APP_PASSCODE")
+    except Exception:          # no secrets.toml configured at all
+        code = None
+    return str(code) if code else os.environ.get("APP_PASSCODE")
+
+
+def require_passcode():
+    """Block the app until the right 4-digit code is entered."""
+    if st.session_state.get("authed"):
+        return
+
+    expected = _expected_passcode()
+    if not expected:
+        # Fail closed: an unset secret must never mean "let everyone in".
+        st.error("No passcode configured. Set APP_PASSCODE in the app secrets.")
+        st.stop()
+
+    st.title("🔒 Locked")
+    if st.session_state.get("attempts", 0) >= MAX_ATTEMPTS:
+        st.error("Too many incorrect attempts. Reload the page to try again.")
+        st.stop()
+
+    entered = st.text_input("Passcode", type="password", max_chars=4)
+    if st.button("Unlock", type="primary"):
+        # compare_digest: constant-time, so response timing can't leak the code
+        if hmac.compare_digest(entered, expected):
+            st.session_state["authed"] = True
+            st.rerun()
+        else:
+            st.session_state["attempts"] = st.session_state.get("attempts", 0) + 1
+            left = MAX_ATTEMPTS - st.session_state["attempts"]
+            st.error(f"Incorrect. {left} attempt(s) left.")
+    st.stop()
+
+
+require_passcode()
+
 st.title("⚽ Premier League Match Predictor")
 st.caption("Home win / Draw / Away win from recent form. Data: football-data.co.uk")
 
