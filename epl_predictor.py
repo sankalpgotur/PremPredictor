@@ -11,6 +11,7 @@ Two jobs live here:
   * app.py     loads the saved model and serves predictions (no retraining)
 """
 
+import datetime as _dt
 import json
 import numpy as np
 import pandas as pd
@@ -23,7 +24,24 @@ from xgboost import XGBClassifier
 # ----------------------------------------------------------------------
 # CONFIG
 # ----------------------------------------------------------------------
-SEASONS = ["1920", "2021", "2122", "2223", "2324", "2425", "2526"]
+N_SEASONS = 8        # how many seasons of history to train on
+
+
+def _season_codes(n=N_SEASONS, today=None):
+    """football-data season codes, oldest -> current.
+
+    A season starting in year Y is coded YY(Y+1). The EPL runs Aug-May, so
+    from July onward the current season is the one starting this year.
+    Derived from the date rather than hardcoded, so the current season is
+    picked up automatically instead of going stale every August.
+    """
+    today = today or _dt.date.today()
+    start = today.year if today.month >= 7 else today.year - 1
+    return [f"{y % 100:02d}{(y + 1) % 100:02d}"
+            for y in range(start - n + 1, start + 1)]
+
+
+SEASONS = _season_codes()
 BASE = "https://www.football-data.co.uk/mmz4281/{season}/E0.csv"
 USECOLS = ["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR",
            "HS", "AS", "HST", "AST"]
