@@ -1,37 +1,34 @@
 """
-Streamlit UI for the EPL predictor.
+Match Model Lab -- pre-match projection engine.
 Run locally:  streamlit run app.py
-Deploy free:  push to GitHub -> share.streamlit.io -> pick app.py
 """
 import hmac
 import os
 
 import streamlit as st
-import pandas as pd
 
-from epl_predictor import load_data, load_model, predict_fixture, _team_long
-from corners_model import (load_corner_data, load_corners_model,
-                           predict_corners, FORM_WINDOW)
+import design as D
+from count_model import (MARKETS, FORM_WINDOW, load_match_data, load_count_model,
+                         predict_market, predict_result, _long)
 
-st.set_page_config(page_title="EPL Match Predictor", page_icon="⚽")
+st.set_page_config(page_title="Match Model Lab", page_icon="📊", layout="wide")
 
 MAX_ATTEMPTS = 5
 
 
+# ----------------------------------------------------------------- auth
 def _expected_passcode():
-    """Passcode comes from secrets/env, never from the source (repo is public)."""
+    """Passcode comes from secrets/env, never from source (repo is public)."""
     try:
         code = st.secrets.get("APP_PASSCODE")
-    except Exception:          # no secrets.toml configured at all
+    except Exception:
         code = None
     return str(code) if code else os.environ.get("APP_PASSCODE")
 
 
 def require_passcode():
-    """Block the app until the right 4-digit code is entered."""
     if st.session_state.get("authed"):
         return
-
     expected = _expected_passcode()
     if not expected:
         # Fail closed: an unset secret must never mean "let everyone in".
@@ -42,124 +39,119 @@ def require_passcode():
     if st.session_state.get("attempts", 0) >= MAX_ATTEMPTS:
         st.error("Too many incorrect attempts. Reload the page to try again.")
         st.stop()
-
     entered = st.text_input("Passcode", type="password", max_chars=4)
     if st.button("Unlock", type="primary"):
-        # compare_digest: constant-time, so response timing can't leak the code
         if hmac.compare_digest(entered, expected):
             st.session_state["authed"] = True
             st.rerun()
         else:
             st.session_state["attempts"] = st.session_state.get("attempts", 0) + 1
-            left = MAX_ATTEMPTS - st.session_state["attempts"]
-            st.error(f"Incorrect. {left} attempt(s) left.")
+            st.error(f"Incorrect. {MAX_ATTEMPTS - st.session_state['attempts']} attempt(s) left.")
     st.stop()
 
 
 require_passcode()
 
-st.title("⚽ Premier League Match Predictor")
-st.caption("Home win / Draw / Away win from recent form. Data: football-data.co.uk")
 
-# ttl=6h => the app re-pulls the current-season CSV on its own. No git push needed
-# to stay current; the numbers refresh as new results land in the source file.
-@st.cache_data(ttl=6 * 3600)
+# ----------------------------------------------------------------- data
+@st.cache_data(ttl=6 * 3600, show_spinner="Pulling season data…")
 def get_data():
-    return load_data()
+    return load_match_data()
+
 
 @st.cache_resource
 def get_model():
-    return load_model()
+    return load_count_model()
 
-@st.cache_data(ttl=6 * 3600)
-def get_corner_data():
-    return load_corner_data()
 
-@st.cache_resource
-def get_corner_model():
-    return load_corners_model()
+st.html(D.page_css())
 
 data = get_data()
-model, feature_cols = get_model()
-
+model = get_model()
 teams = sorted(set(data["HomeTeam"]) | set(data["AwayTeam"]))
-c1, c2 = st.columns(2)
-home = c1.selectbox("Home team", teams, index=teams.index("Chelsea") if "Chelsea" in teams else 0)
-away = c2.selectbox("Away team", teams, index=1)
+refs = sorted(model["referees"], key=lambda r: -model["referees"][r]["games"])
 
-tab_result, tab_corners = st.tabs(["Match outcome", "Corners"])
+st.html(D.header())
 
-# ----------------------------------------------------------------- outcome
-with tab_result:
-    if st.button("Predict outcome", type="primary", use_container_width=True):
-        if home == away:
-            st.warning("Pick two different teams.")
-        else:
-            probs = predict_fixture(model, feature_cols, data, home, away)
-            st.subheader(f"{home} (H) vs {away} (A)")
-            cols = st.columns(3)
-            for col, (label, p) in zip(cols, probs.items()):
-                col.metric(label, f"{p*100:.0f}%")
-            st.bar_chart(probs)
-            pick = max(probs, key=probs.get)
-            st.success(f"Most likely: **{pick}** ({probs[pick]*100:.0f}%)")
+# ----------------------------------------------------------------- controls
+c1, c2, c3, c4 = st.columns([2, 2, 2, 1.4])
+home = c1.selectbox("home team", teams,
+                    index=teams.index("Chelsea") if "Chelsea" in teams else 0)
+away = c2.selectbox("away team", teams,
+                    index=teams.index("Arsenal") if "Arsenal" in teams else 1)
+referee = c3.selectbox("referee", refs)
+market_key = c4.selectbox("market detail", list(MARKETS),
+                          format_func=lambda k: MARKETS[k][2],
+                          index=list(MARKETS).index("corners"))
 
-    with st.expander("Recent form used"):
-        long = _team_long(data)
-        for t in (home, away):
-            last = long[long.team == t].tail(5)[["Date", "gf", "ga", "shots", "pts"]]
-            st.write(f"**{t}** \u2014 last 5"); st.dataframe(last, hide_index=True)
+if home == away:
+    st.warning("Pick two different teams.")
+    st.stop()
 
-# ----------------------------------------------------------------- corners
-with tab_corners:
-    st.caption(
-        f"Negative Binomial model. Inputs: last {FORM_WINDOW} matches, "
-        "same-venue record, and the last head-to-head."
-    )
-    if st.button("Predict corners", type="primary", use_container_width=True):
-        if home == away:
-            st.warning("Pick two different teams.")
-        else:
-            cdata = get_corner_data()
-            cmodel = get_corner_model()
-            try:
-                r = predict_corners(cmodel, cdata, home, away)
-            except ValueError as e:
-                st.error(str(e)); st.stop()
+# ----------------------------------------------------------------- compute
+try:
+    results = {k: predict_market(model, data, home, away, k, referee) for k in MARKETS}
+    res = predict_result(model, data, home, away)
+except ValueError as e:
+    st.error(str(e))
+    st.stop()
 
-            st.subheader(f"{home} (H) vs {away} (A)")
-            labels = {"HC": f"{home} corners", "AC": f"{away} corners", "TC": "Total corners"}
-            cols = st.columns(3)
-            for col, t in zip(cols, ["HC", "AC", "TC"]):
-                e = r["targets"][t]
-                col.metric(labels[t], e["most_likely"], f"mean {e['mean']}")
-                col.caption(f"80% range: {e['interval80'][0]}\u2013{e['interval80'][1]}")
+ref_stats = model["referees"].get(referee)
+league = model["league"]
 
-            st.write("**Total corners \u2014 probability of each count**")
-            pmf = r["targets"]["TC"]["pmf"][:23]
-            st.bar_chart(pd.DataFrame({"probability": pmf}, index=range(len(pmf))))
+st.html(D.summary_strip(home, away, res, referee, ref_stats, FORM_WINDOW))
 
-            st.write("**Over / under**")
-            ou = r["targets"]["TC"]["over_under"]
-            st.dataframe(pd.DataFrame([
-                {"line": ln, "over": f"{v['over']*100:.1f}%", "under": f"{v['under']*100:.1f}%"}
-                for ln, v in ou.items()
-            ]), hide_index=True)
+# ----------------------------------------------------------------- markets
+cards = "".join(
+    D.market_card(k, MARKETS[k][2], MARKETS[k][3], results[k], k == market_key)
+    for k in MARKETS
+)
+left, right = st.columns([2.15, 1])
 
-            f = r["features"]
-            with st.expander("Inputs the model used"):
-                st.dataframe(pd.DataFrame([
-                    {"signal": f"last {FORM_WINDOW} \u2014 corners won",
-                     home: round(f["h_form_cf"], 2), away: round(f["a_form_cf"], 2)},
-                    {"signal": f"last {FORM_WINDOW} \u2014 shots",
-                     home: round(f["h_form_sf"], 1), away: round(f["a_form_sf"], 1)},
-                    {"signal": "at this venue \u2014 corners won",
-                     home: round(f["h_venue_cf"], 2), away: round(f["a_venue_cf"], 2)},
-                    {"signal": "last meeting \u2014 corners",
-                     home: f["h2h_hc"], away: f["h2h_ac"]},
-                ]), hide_index=True)
-                st.caption(
-                    f"{f.get('h2h_meetings', 0)} prior meetings in the data. "
-                    "Note: head-to-head tested as statistically insignificant "
-                    "(p>0.5) \u2014 shown for reference, it barely moves the forecast."
-                )
+with left:
+    st.html(D.market_grid(cards))
+
+    r = results[market_key]
+    f = r["features"]
+    drivers = [
+        (f"form {market_key} · {home}", f"{f[f'h_form_{market_key}_f']:.2f}"),
+        (f"form {market_key} · {away}", f"{f[f'a_form_{market_key}_f']:.2f}"),
+        (f"at venue · {home}", f"{f[f'h_venue_{market_key}_f']:.2f}"),
+        (f"at venue · {away}", f"{f[f'a_venue_{market_key}_f']:.2f}"),
+        ("last h2h", f"{f[f'h2h_{market_key}_h']:.0f} – {f[f'h2h_{market_key}_a']:.0f}"),
+    ]
+    if "ref_factor" in f:
+        drivers.append(("referee factor", f"{f['ref_factor']:.3f}"))
+
+    note = ("Negative Binomial GLM per side, fitted on rolling form, same-venue record "
+            "and last head-to-head. Head-to-head tested as statistically insignificant "
+            "(p&gt;0.5) — it is shown for reference and barely moves the projection. "
+            "Totals beat a league-mean baseline by under 1% for most markets; the "
+            "home and away sides are the numbers with real signal.")
+    st.html(D.detail_panel(MARKETS[market_key][2], r, FORM_WINDOW, drivers, note))
+
+# ----------------------------------------------------------------- sidebar
+with right:
+    long = _long(data)
+    frows = []
+    for key, col in [("shots", "shots_f"), ("sot", "sot_f"), ("corners", "corners_f"),
+                     ("goals", "goals_f"), ("fouls", "fouls_f"), ("yellows", "yellows_f")]:
+        h = long[long.team == home].tail(FORM_WINDOW)[col].mean()
+        a = long[long.team == away].tail(FORM_WINDOW)[col].mean()
+        frows.append((key, float(h), float(a)))
+    st.html(D.feature_table(home, away, frows, FORM_WINDOW))
+
+    traces = []
+    for team, col in [(home, D.ACCENT), (away, D.AWAY)]:
+        recent = data[(data.HomeTeam == team) | (data.AwayTeam == team)].tail(FORM_WINDOW)
+        pts = []
+        for _, m in recent.iterrows():
+            is_home = m.HomeTeam == team
+            gf, ga = (m.FTHG, m.FTAG) if is_home else (m.FTAG, m.FTHG)
+            pts.append(3 if gf > ga else 1 if gf == ga else 0)
+        wins = sum(1 for p in pts if p == 3)
+        traces.append((team, col, f"{sum(pts)} pts · {wins/len(pts)*100:.0f}% win", pts))
+    st.html(D.form_trace(traces))
+    st.html(D.referee_panel(referee, ref_stats, league))
+
+st.html(D.footer(len(data), data["Date"].max().date()))
