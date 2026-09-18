@@ -10,6 +10,8 @@ import streamlit as st
 import design as D
 from count_model import (MARKETS, FORM_WINDOW, load_match_data, load_count_model,
                          predict_market, predict_result, _long)
+from player_data import load as load_players
+from player_model import PLAYER_MARKETS, market_players
 
 st.set_page_config(page_title="Match Model Lab", page_icon="📊", layout="wide")
 
@@ -64,25 +66,33 @@ def get_model():
     return load_count_model()
 
 
+@st.cache_resource
+def get_players():
+    try:
+        return load_players()
+    except FileNotFoundError:
+        return None
+
+
 st.html(D.page_css())
 
 data = get_data()
 model = get_model()
+players = get_players()
 teams = sorted(set(data["HomeTeam"]) | set(data["AwayTeam"]))
 refs = sorted(model["referees"], key=lambda r: -model["referees"][r]["games"])
+
+st.session_state.setdefault("market", "corners")
 
 st.html(D.header())
 
 # ----------------------------------------------------------------- controls
-c1, c2, c3, c4 = st.columns([2, 2, 2, 1.4])
+c1, c2, c3 = st.columns([2, 2, 2])
 home = c1.selectbox("home team", teams,
                     index=teams.index("Chelsea") if "Chelsea" in teams else 0)
 away = c2.selectbox("away team", teams,
                     index=teams.index("Arsenal") if "Arsenal" in teams else 1)
 referee = c3.selectbox("referee", refs)
-market_key = c4.selectbox("market detail", list(MARKETS),
-                          format_func=lambda k: MARKETS[k][2],
-                          index=list(MARKETS).index("corners"))
 
 if home == away:
     st.warning("Pick two different teams.")
@@ -101,17 +111,28 @@ league = model["league"]
 
 st.html(D.summary_strip(home, away, res, referee, ref_stats, FORM_WINDOW))
 
-# ----------------------------------------------------------------- markets
-cards = "".join(
-    D.market_card(k, MARKETS[k][2], MARKETS[k][3], results[k], k == market_key)
-    for k in MARKETS
-)
+# ----------------------------------------------------------------- market cards
+# Streamlit cannot make arbitrary HTML clickable, so each card gets a real
+# button beneath it; the button sets the selected market and reruns.
+st.html(D._lbl("markets · select one to drill in", D.ACCENT, "10px"))
+cols = st.columns(len(MARKETS))
+for col, key in zip(cols, MARKETS):
+    with col:
+        st.html(D.market_card(key, MARKETS[key][2], MARKETS[key][3],
+                              results[key], key == st.session_state["market"]))
+        has_players = key in PLAYER_MARKETS
+        label = "▸ players" if has_players else "▸ detail"
+        if st.button(label, key=f"btn_{key}", use_container_width=True):
+            st.session_state["market"] = key
+            st.rerun()
+
+market_key = st.session_state["market"]
+r = results[market_key]
+
+# ----------------------------------------------------------------- detail
 left, right = st.columns([2.15, 1])
 
 with left:
-    st.html(D.market_grid(cards))
-
-    r = results[market_key]
     f = r["features"]
     drivers = [
         (f"form {market_key} · {home}", f"{f[f'h_form_{market_key}_f']:.2f}"),
@@ -123,12 +144,36 @@ with left:
     if "ref_factor" in f:
         drivers.append(("referee factor", f"{f['ref_factor']:.3f}"))
 
-    note = ("Negative Binomial GLM per side, fitted on rolling form, same-venue record "
-            "and last head-to-head. Head-to-head tested as statistically insignificant "
-            "(p&gt;0.5) — it is shown for reference and barely moves the projection. "
-            "Totals beat a league-mean baseline by under 1% for most markets; the "
-            "home and away sides are the numbers with real signal.")
+    note = ("Negative Binomial GLM per side on rolling form, same-venue record and "
+            "last head-to-head. Head-to-head tested statistically insignificant "
+            "(p&gt;0.5). Totals beat a league-mean baseline by under 1% for most "
+            "markets — the home and away sides carry the real signal.")
     st.html(D.detail_panel(MARKETS[market_key][2], r, FORM_WINDOW, drivers, note))
+
+    # ---- player breakdown ----
+    if market_key not in PLAYER_MARKETS:
+        st.html(D.no_player_data(MARKETS[market_key][2]))
+    elif players is None:
+        st.html(D.no_player_data(MARKETS[market_key][2]))
+    else:
+        rf = 1.0
+        if market_key in ("yellows", "fouls") and ref_stats:
+            rf = ref_stats["y_factor" if market_key == "yellows" else "f_factor"]
+        out = market_players(players, home, away, market_key, r, rf, top=10)
+        _, label, verb = PLAYER_MARKETS[market_key]
+        pnote = (
+            f"Per-90 rates from {players['n_players']} players' {players['season']} "
+            "season totals (FBref), shrunk toward the positional mean so a small "
+            "sample cannot top the table. Squad expectations are rescaled to sum to "
+            "the team projection above, so opponent, venue and referee all flow "
+            "through. <b>Lineups are not published until ~1h before kickoff</b> — "
+            "expected minutes is a usage average, not knowledge of who starts, so a "
+            "rested or rotated player will still appear here."
+        )
+        if not out["home"] and not out["away"]:
+            st.html(D.no_player_data(label))
+        else:
+            st.html(D.player_section(home, away, out, label, verb, pnote))
 
 # ----------------------------------------------------------------- sidebar
 with right:

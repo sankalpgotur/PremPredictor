@@ -1,0 +1,6 @@
+# Offline data refresh only -- NOT needed to run or deploy the app.
+# `python fetch_players.py` uses this to scrape FBref into players.json,
+# which is committed. Keep it out of requirements.txt: it pulls a tls-client
+# binary at import time that is unnecessary weight on Streamlit Cloud.
+-r requirements.txt
+soccerdata

@@ -370,3 +370,103 @@ def footer(n_matches, last_date):
   negative binomial GLM per side, fitted on rolling form, same-venue record and head-to-head.
 </div>
 """
+
+
+# ----------------------------------------------------------------------
+# PLAYER DRILL-DOWN
+# ----------------------------------------------------------------------
+def player_headline(top, verb, market_name):
+    if not top:
+        return ""
+    return f"""
+<div style="background:{PANEL};border:1px solid {ACCENT};border-radius:12px;
+     padding:16px 18px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;
+     justify-content:space-between;font-family:{SANS};margin-bottom:14px;">
+  <div style="display:flex;flex-direction:column;gap:4px;min-width:0;">
+    {_lbl("most likely to record " + verb, ACCENT)}
+    <span style="font-size:24px;font-weight:800;letter-spacing:-.02em;color:{INK};">{top['player']}</span>
+    <span style="font-family:{MONO};font-size:10.5px;color:{MUTE};">
+      {top['pos']} · {top['exp_min']:.0f} exp. min · {top['rate_p90']:.2f} per 90 ·
+      {top['season_total']:.0f} in {top['minutes']:.0f} min this season</span>
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;">
+    <span style="font-size:34px;font-weight:800;letter-spacing:-.03em;line-height:.9;
+          color:{ACCENT};">{top['p_any']*100:.0f}%</span>
+    <span style="font-family:{MONO};font-size:10px;color:{DIM};">chance of 1+</span>
+  </div>
+</div>
+"""
+
+
+def player_table(team, rows, color, market_name):
+    if not rows:
+        return (f'<div style="font-family:{MONO};font-size:11px;color:{DIM};">'
+                f'No player data for {team}.</div>')
+    body = ""
+    mx = max(r["p_any"] for r in rows) or 1
+    for i, r in enumerate(rows):
+        bar = r["p_any"] / mx * 100
+        body += f"""
+    <div style="display:grid;grid-template-columns:18px 1fr 52px 54px;gap:8px;
+         align-items:center;padding:6px 0;border-bottom:1px solid {LINE};">
+      <span style="font-family:{MONO};font-size:10px;color:{DIM};">{i+1}</span>
+      <div style="min-width:0;display:flex;flex-direction:column;gap:3px;">
+        <span style="font-size:12.5px;font-weight:600;color:{INK};white-space:nowrap;
+              overflow:hidden;text-overflow:ellipsis;">{r['player']}</span>
+        <div style="height:4px;background:{TINT};border-radius:2px;overflow:hidden;">
+          <div style="width:{bar:.1f}%;height:100%;background:{color};"></div></div>
+      </div>
+      <span style="font-family:{MONO};font-size:10.5px;color:{MUTE};text-align:right;">
+        {r['pos']} {r['exp_min']:.0f}'</span>
+      <span style="font-family:{MONO};font-size:12.5px;font-weight:600;color:{color};
+            text-align:right;">{r['p_any']*100:.0f}%</span>
+    </div>"""
+
+    return f"""
+<div style="display:flex;flex-direction:column;gap:6px;min-width:0;">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;
+       border-bottom:1px solid {LINE2};padding-bottom:6px;">
+    <span style="font-size:13.5px;font-weight:700;color:{color};">{team}</span>
+    <span style="font-family:{MONO};font-size:9.5px;color:{DIM};letter-spacing:.1em;">P(1+)</span>
+  </div>
+  {body}
+</div>
+"""
+
+
+def player_section(home, away, out, market_name, verb, note):
+    return f"""
+<section style="background:{PANEL};border:1px solid {LINE2};border-radius:12px;
+     padding:18px 20px;display:flex;flex-direction:column;gap:14px;font-family:{SANS};
+     margin-top:18px;">
+  <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:baseline;">
+    <div style="display:flex;flex-direction:column;gap:3px;">
+      {_lbl("player breakdown", ACCENT)}
+      <span style="font-size:19px;font-weight:700;letter-spacing:-.01em;color:{INK};">{market_name}</span>
+    </div>
+    <span style="font-family:{MONO};font-size:10.5px;color:{MUTE};">
+      squad totals rescaled to the team projection</span>
+  </div>
+  {player_headline(out['top'], verb, market_name)}
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:22px;">
+    {player_table(home, out['home'], ACCENT, market_name)}
+    {player_table(away, out['away'], AWAY, market_name)}
+  </div>
+  <div style="font-family:{MONO};font-size:10.5px;color:{DIM};line-height:1.55;
+       border-top:1px solid {LINE};padding-top:10px;">{note}</div>
+</section>
+"""
+
+
+def no_player_data(market_name):
+    return f"""
+<section style="background:{PANEL};border:1px solid {LINE};border-radius:12px;
+     padding:18px 20px;font-family:{MONO};font-size:11px;color:{DIM};line-height:1.6;
+     margin-top:18px;">
+  <span style="color:{INK};font-size:13px;font-family:{SANS};font-weight:600;">
+    No player breakdown for {market_name}</span><br><br>
+  Corners are awarded to a team, not attributed to a player in any of the
+  underlying feeds, so there is nothing to rank. Player views exist for
+  goals, shots on target, yellow cards and fouls.
+</section>
+"""
