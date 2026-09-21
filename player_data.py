@@ -46,6 +46,8 @@ MANUAL_ALIASES = {
     "Real Sociedad": "Sociedad",
     "Celta Vigo": "Celta",
     "Rayo Vallecano": "Vallecano",
+    "Racing Sant": "Santander",
+    "Racing Santander": "Santander",
     "Monchengladbach": "M'gladbach",
     "Mönchengladbach": "M'gladbach",
     "Gladbach": "M'gladbach",
