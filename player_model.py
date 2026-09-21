@@ -23,7 +23,7 @@ A rotated-out starter still shows near-full minutes here.
 
 import numpy as np
 
-from player_data import load as load_players, player_rates, expected_minutes
+from player_data import player_rates, expected_minutes
 
 # market key -> (player stat column, label, verb)
 PLAYER_MARKETS = {
@@ -34,7 +34,7 @@ PLAYER_MARKETS = {
 }
 
 
-def squad_projection(players, team, market, team_lambda, team_matches=None,
+def squad_projection(lg, team, market, team_lambda, team_matches=None,
                      ref_factor=1.0, top=12):
     """Rank a team's squad for one market.
 
@@ -42,7 +42,7 @@ def squad_projection(players, team, market, team_lambda, team_matches=None,
     Returns rows with expected count and P(at least one).
     """
     stat, _, _ = PLAYER_MARKETS[market]
-    df = player_rates(players["df"])
+    df = player_rates(lg["df"])
     squad = df[df["team"] == team].copy()
     if squad.empty:
         return []
@@ -84,11 +84,13 @@ def squad_projection(players, team, market, team_lambda, team_matches=None,
     ]
 
 
-def market_players(players, home, away, market, result, ref_factor=1.0, top=10):
+def market_players(lg, home, away, market, result, ref_factor=1.0, top=10):
     """Both squads for one market, plus the single most likely player overall."""
-    h = squad_projection(players, home, market, result["sides"]["h"]["mu"],
+    if lg is None:
+        return {"home": [], "away": [], "top": None}
+    h = squad_projection(lg, home, market, result["sides"]["h"]["mu"],
                          ref_factor=ref_factor, top=top)
-    a = squad_projection(players, away, market, result["sides"]["a"]["mu"],
+    a = squad_projection(lg, away, market, result["sides"]["a"]["mu"],
                          ref_factor=ref_factor, top=top)
     combined = sorted(h + a, key=lambda r: -r["p_any"])
     return {"home": h, "away": a, "top": combined[0] if combined else None}

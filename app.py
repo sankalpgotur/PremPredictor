@@ -10,7 +10,8 @@ import streamlit as st
 import design as D
 from count_model import (MARKETS, FORM_WINDOW, load_match_data, load_count_model,
                          predict_market, predict_result, _long)
-from player_data import load as load_players
+from leagues import LEAGUES, DEFAULT_LEAGUE, label as league_label, has_referee
+from player_data import load as load_players, league_players
 from player_model import PLAYER_MARKETS, market_players
 
 st.set_page_config(page_title="Match Model Lab", page_icon="📊", layout="wide")
@@ -57,8 +58,8 @@ require_passcode()
 
 # ----------------------------------------------------------------- data
 @st.cache_data(ttl=6 * 3600, show_spinner="Pulling season data…")
-def get_data():
-    return load_match_data()
+def get_data(league):
+    return load_match_data(league)
 
 
 @st.cache_resource
@@ -68,31 +69,50 @@ def get_model():
 
 @st.cache_resource
 def get_players():
+    """Missing or stale cache must degrade to "no player view", not crash."""
     try:
-        return load_players()
-    except FileNotFoundError:
+        p = load_players()
+        return p if "leagues" in p else None
+    except (FileNotFoundError, KeyError, ValueError):
         return None
 
 
 st.html(D.page_css())
 
-data = get_data()
-model = get_model()
+all_models = get_model()
 players = get_players()
-teams = sorted(set(data["HomeTeam"]) | set(data["AwayTeam"]))
-refs = sorted(model["referees"], key=lambda r: -model["referees"][r]["games"])
 
 st.session_state.setdefault("market", "corners")
 
-st.html(D.header())
-
 # ----------------------------------------------------------------- controls
-c1, c2, c3 = st.columns([2, 2, 2])
-home = c1.selectbox("home team", teams,
-                    index=teams.index("Chelsea") if "Chelsea" in teams else 0)
-away = c2.selectbox("away team", teams,
-                    index=teams.index("Arsenal") if "Arsenal" in teams else 1)
-referee = c3.selectbox("referee", refs)
+codes = list(LEAGUES)
+ctl = st.columns([1.6, 2, 2, 1.8])
+league = ctl[0].selectbox("league", codes, format_func=league_label,
+                          index=codes.index(DEFAULT_LEAGUE))
+
+st.html(D.header(league_name=LEAGUES[league]["name"]))
+
+model = all_models["leagues"][league]
+data = get_data(league)
+teams = sorted(set(data["HomeTeam"]) | set(data["AwayTeam"]))
+
+# only this season's sides -- a date window would reach back into last
+# season's final matchday and pick up relegated teams
+current = data[data["Season"] == data["Season"].max()]
+active = sorted(set(current["HomeTeam"]) | set(current["AwayTeam"])) or teams
+
+home = ctl[1].selectbox("home team", active, index=0)
+away = ctl[2].selectbox("away team", active, index=min(1, len(active) - 1))
+
+refs = sorted(model.get("referees", {}),
+              key=lambda r: -model["referees"][r]["games"])
+if has_referee(league) and refs:
+    referee = ctl[3].selectbox("referee", refs)
+else:
+    referee = None
+    ctl[3].selectbox("referee", ["not published"], disabled=True,
+                     help="football-data.co.uk carries referees for the "
+                          "Premier League only.")
 
 if home == away:
     st.warning("Pick two different teams.")
@@ -100,16 +120,18 @@ if home == away:
 
 # ----------------------------------------------------------------- compute
 try:
-    results = {k: predict_market(model, data, home, away, k, referee) for k in MARKETS}
-    res = predict_result(model, data, home, away)
+    results = {k: predict_market(model, data, home, away, k, referee, league)
+               for k in MARKETS}
+    res = predict_result(model, data, home, away, league)
 except ValueError as e:
     st.error(str(e))
     st.stop()
 
-ref_stats = model["referees"].get(referee)
-league = model["league"]
+ref_stats = model.get("referees", {}).get(referee) if referee else None
+league_means = model["league_means"]
 
-st.html(D.summary_strip(home, away, res, referee, ref_stats, FORM_WINDOW))
+st.html(D.summary_strip(home, away, res, referee or "not published",
+                        ref_stats, FORM_WINDOW))
 
 # ----------------------------------------------------------------- market cards
 # Streamlit cannot make arbitrary HTML clickable, so each card gets a real
@@ -153,16 +175,17 @@ with left:
     # ---- player breakdown ----
     if market_key not in PLAYER_MARKETS:
         st.html(D.no_player_data(MARKETS[market_key][2]))
-    elif players is None:
+    elif league_players(players, league) is None:
         st.html(D.no_player_data(MARKETS[market_key][2]))
     else:
         rf = 1.0
         if market_key in ("yellows", "fouls") and ref_stats:
             rf = ref_stats["y_factor" if market_key == "yellows" else "f_factor"]
-        out = market_players(players, home, away, market_key, r, rf, top=10)
+        lgp = league_players(players, league)
+        out = market_players(lgp, home, away, market_key, r, rf, top=10)
         _, label, verb = PLAYER_MARKETS[market_key]
         pnote = (
-            f"Per-90 rates from {players['n_players']} players' {players['season']} "
+            f"Per-90 rates from {lgp['n_players']} players' {players['season']} "
             "season totals (FBref), shrunk toward the positional mean so a small "
             "sample cannot top the table. Squad expectations are rescaled to sum to "
             "the team projection above, so opponent, venue and referee all flow "
@@ -197,6 +220,7 @@ with right:
         wins = sum(1 for p in pts if p == 3)
         traces.append((team, col, f"{sum(pts)} pts · {wins/len(pts)*100:.0f}% win", pts))
     st.html(D.form_trace(traces))
-    st.html(D.referee_panel(referee, ref_stats, league))
+    st.html(D.referee_panel(referee, ref_stats, league_means,
+                            available=has_referee(league)))
 
 st.html(D.footer(len(data), data["Date"].max().date()))

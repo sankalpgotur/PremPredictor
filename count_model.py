@@ -22,7 +22,7 @@ import pandas as pd
 import statsmodels.api as sm
 from scipy.stats import nbinom
 
-from epl_predictor import SEASONS, BASE
+from leagues import LEAGUES, SEASONS, DEFAULT_LEAGUE, url as league_url, has_referee
 
 FORM_WINDOW = 10
 VENUE_WINDOW = 10
@@ -48,17 +48,21 @@ RAW_COLS = ["Date", "Time", "HomeTeam", "AwayTeam", "Referee",
 # ----------------------------------------------------------------------
 # DATA
 # ----------------------------------------------------------------------
-def load_match_data(seasons=SEASONS):
+def load_match_data(league=DEFAULT_LEAGUE, seasons=SEASONS):
     frames = []
     for s in seasons:
         try:
-            df = pd.read_csv(BASE.format(season=s))
+            df = pd.read_csv(league_url(league, s))
         except Exception:
             continue
         df = df[[c for c in RAW_COLS if c in df.columns]].copy()
         df["Season"] = s
         frames.append(df)
+    if not frames:
+        raise ValueError(f"No data for league {league!r}.")
     data = pd.concat(frames, ignore_index=True)
+    if "Referee" not in data.columns:
+        data["Referee"] = pd.NA
     data["Date"] = pd.to_datetime(data["Date"], dayfirst=True, errors="coerce")
     need = ["Date"] + [c for m in MARKETS.values() for c in m[:2]]
     data = data.dropna(subset=[c for c in need if c in data.columns])
@@ -148,18 +152,22 @@ def _h2h(data, market):
     return pd.Series(out_h, index=data.index), pd.Series(out_a, index=data.index)
 
 
-def market_features(market):
-    """Feature names used by one market's models."""
+def market_features(market, league=DEFAULT_LEAGUE):
+    """Feature names used by one market's models.
+
+    The referee term is dropped for leagues with no Referee column
+    (football-data publishes it for the Premier League only).
+    """
     return [
         f"h_form_{market}_f", f"h_form_{market}_a",
         f"a_form_{market}_f", f"a_form_{market}_a",
         "h_form_shots_f", "a_form_shots_f",
         f"h_venue_{market}_f", f"a_venue_{market}_f",
         f"h2h_{market}_h", f"h2h_{market}_a",
-    ] + (["ref_factor"] if market in REF_SENSITIVE else [])
+    ] + (["ref_factor"] if market in REF_SENSITIVE and has_referee(league) else [])
 
 
-def build_features(data, market):
+def build_features(data, market, league=DEFAULT_LEAGUE):
     long = _rollups(_long(data))
     cols = [f"form_{market}_f", f"form_{market}_a", "form_shots_f",
             f"venue_{market}_f"]
@@ -171,12 +179,12 @@ def build_features(data, market):
     X[f"h2h_{market}_h"] = hh.fillna(X[f"h_form_{market}_f"])
     X[f"h2h_{market}_a"] = aa.fillna(X[f"a_form_{market}_f"])
 
-    if market in REF_SENSITIVE:
+    if market in REF_SENSITIVE and has_referee(league):
         tbl, _ = referee_table(data)
         col = "y_factor" if market == "yellows" else "f_factor"
         X["ref_factor"] = X["Referee"].map(tbl[col]).fillna(1.0)
 
-    feats = market_features(market)
+    feats = market_features(market, league)
     X = X.dropna(subset=feats)
     hc, ac = MARKETS[market][:2]
     return X, {"h": X[hc], "a": X[ac], "t": X[f"tot_{market}"]}, feats
@@ -194,11 +202,11 @@ def fit_nb(X, y, feats):
     return m
 
 
-def train_and_save(path=MODEL_PATH, seasons=SEASONS, verbose=True):
-    data = load_match_data(seasons)
-    out = {"markets": {}}
+def train_league(data, league, verbose=True):
+    """Fit every market for one league."""
+    out = {"markets": {}, "has_referee": has_referee(league)}
     for mk in MARKETS:
-        X, ys, feats = build_features(data, mk)
+        X, ys, feats = build_features(data, mk, league)
         entry = {"features": feats, "sides": {}}
         for side, y in ys.items():
             m = fit_nb(X, y, feats)
@@ -208,16 +216,44 @@ def train_and_save(path=MODEL_PATH, seasons=SEASONS, verbose=True):
             }
         out["markets"][mk] = entry
         if verbose:
-            print(f"  {mk:<8} n={len(X):<5} alpha(total)={entry['sides']['t']['alpha']:.4f}")
-    tbl, lg = referee_table(data)
-    out["league"] = {k: float(v) for k, v in lg.items()}
-    out["referees"] = {
-        r: {"games": int(v.games), "y": float(v.y_sh), "f": float(v.f_sh),
-            "r": float(v.r), "y_factor": float(v.y_factor), "f_factor": float(v.f_factor)}
-        for r, v in tbl.iterrows()
-    }
+            print(f"    {mk:<8} n={len(X):<5} alpha(total)={entry['sides']['t']['alpha']:.4f}")
+
+    if has_referee(league):
+        tbl, lg = referee_table(data)
+        out["league_means"] = {k: float(v) for k, v in lg.items()}
+        out["referees"] = {
+            r: {"games": int(v.games), "y": float(v.y_sh), "f": float(v.f_sh),
+                "r": float(v.r), "y_factor": float(v.y_factor),
+                "f_factor": float(v.f_factor)}
+            for r, v in tbl.iterrows()
+        }
+    else:
+        d = data.copy()
+        out["league_means"] = {
+            "y": float((d.HY + d.AY).mean()), "f": float((d.HF + d.AF).mean()),
+            "r": float((d.HR + d.AR).mean()),
+        }
+        out["referees"] = {}
+    out["teams"] = sorted(set(data.HomeTeam) | set(data.AwayTeam))
+    out["n_matches"] = int(len(data))
+    out["last_date"] = str(data.Date.max().date())
+    return out
+
+
+def train_and_save(path=MODEL_PATH, seasons=SEASONS, verbose=True):
+    """Fit all five leagues and write one file keyed by league code."""
+    out = {"leagues": {}}
+    for code in LEAGUES:
+        if verbose:
+            print(f"  {LEAGUES[code]['name']}:")
+        data = load_match_data(code, seasons)
+        out["leagues"][code] = train_league(data, code, verbose)
+    return _write(out, path)
+
+
+def _write(out, path):
     with open(path, "w") as f:
-        json.dump(out, f, indent=2)
+        json.dump(out, f)
     return out
 
 
@@ -245,7 +281,7 @@ def nb_pmf(mu, alpha, kmax=40):
     return nbinom.pmf(np.arange(kmax + 1), n, n / (n + mu))
 
 
-def fixture_row(data, home, away, market, referee=None, model=None):
+def fixture_row(data, home, away, market, referee=None, model=None, league=DEFAULT_LEAGUE):
     """Assemble one market's feature row for an unplayed fixture."""
     long = _long(data)
     row = {}
@@ -271,19 +307,19 @@ def fixture_row(data, home, away, market, referee=None, model=None):
         row[f"h2h_{market}_h"] = p[hc] if p.HomeTeam == home else p[ac]
         row[f"h2h_{market}_a"] = p[ac] if p.HomeTeam == home else p[hc]
 
-    if market in REF_SENSITIVE:
+    if market in REF_SENSITIVE and has_referee(league):
         f = 1.0
         if referee and model:
             key = "y_factor" if market == "yellows" else "f_factor"
-            f = model["referees"].get(referee, {}).get(key, 1.0)
+            f = model.get("referees", {}).get(referee, {}).get(key, 1.0)
         row["ref_factor"] = f
     return row
 
 
-def predict_market(model, data, home, away, market, referee=None):
+def predict_market(model, data, home, away, market, referee=None, league=DEFAULT_LEAGUE):
     """mu / most-likely / interval / pmf / over-under for one market."""
     spec = model["markets"][market]
-    row = fixture_row(data, home, away, market, referee, model)
+    row = fixture_row(data, home, away, market, referee, model, league)
     out = {"features": row, "sides": {}}
     for side in ("h", "a", "t"):
         s = spec["sides"][side]
@@ -311,9 +347,9 @@ def predict_market(model, data, home, away, market, referee=None):
     return out
 
 
-def predict_result(model, data, home, away):
+def predict_result(model, data, home, away, league=DEFAULT_LEAGUE):
     """1X2 and half-time 1X2, from the goals market's home/away means."""
-    g = predict_market(model, data, home, away, "goals")
+    g = predict_market(model, data, home, away, "goals", league=league)
     lh, la = g["sides"]["h"]["mu"], g["sides"]["a"]["mu"]
 
     def grid(mh, ma):

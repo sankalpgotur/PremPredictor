@@ -66,14 +66,14 @@ def page_css():
 """
 
 
-def header(title="Pre-match projection engine",
-           sub="negative binomial counts · rolling-window features · referee adjustment"):
+def header(title="Pre-match projection engine", sub=None, league_name=""):
+    sub = sub or "negative binomial counts · rolling-window features"
     return f"""
 <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;
      justify-content:space-between;border-bottom:1px solid {LINE};padding-bottom:14px;
      margin-bottom:18px;font-family:{SANS};">
   <div style="display:flex;flex-direction:column;gap:4px;">
-    {_lbl("match model lab", ACCENT, "11px")}
+    {_lbl("match model lab" + (" · " + league_name if league_name else ""), ACCENT, "11px")}
     <div style="font-size:26px;font-weight:700;letter-spacing:-.02em;color:{INK};">{title}</div>
     <div style="font-family:{MONO};font-size:11px;color:{DIM};">{sub}</div>
   </div>
@@ -326,7 +326,18 @@ def form_trace(traces):
 """
 
 
-def referee_panel(name, stats, league):
+def referee_panel(name, stats, league, available=True):
+    if not available:
+        return f"""
+<section style="background:{PANEL};border:1px solid {LINE};border-radius:12px;
+     padding:16px 17px;display:flex;flex-direction:column;gap:10px;font-family:{SANS};">
+  {_lbl("referee effect")}
+  <div style="font-family:{MONO};font-size:10.5px;color:{DIM};line-height:1.55;">
+    football-data.co.uk publishes a Referee column for the Premier League only,
+    so card and foul projections for this league carry no official adjustment.
+  </div>
+</section>
+"""
     if not stats:
         return ""
     rows = [("yellows / match", stats["y"], league["y"], 6.5),
