@@ -481,3 +481,35 @@ def no_player_data(market_name):
   goals, shots on target, yellow cards and fouls.
 </section>
 """
+
+
+def lineup_banner(home, away, mult, active):
+    """State whether projections are running on a published XI or a usage average."""
+    if not active:
+        return f"""
+<div style="background:{PANEL};border:1px solid {LINE};border-left:3px solid {MUTE};
+     border-radius:8px;padding:10px 14px;font-family:{MONO};font-size:10.5px;
+     color:{DIM};line-height:1.5;margin-bottom:12px;">
+  <b style="color:{INK};">No lineup entered.</b> Expected minutes is a usage
+  average, so a rotated or rested player still reads high. Enter the XI below
+  once team news lands and every number on this page sharpens.
+</div>
+"""
+    def band(m):
+        if m >= 1.02: return ACCENT, "stronger than usual"
+        if m <= 0.95: return WARN, "weakened"
+        return ACCENT, "about full strength"
+    ch, th = band(mult["home"]); ca, ta = band(mult["away"])
+    return f"""
+<div style="background:{PANEL};border:1px solid {ACCENT};border-radius:8px;
+     padding:10px 14px;font-family:{MONO};font-size:10.5px;color:{DIM};
+     line-height:1.6;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:16px;
+     justify-content:space-between;align-items:center;">
+  <span><b style="color:{ACCENT};">Lineup applied.</b> Minutes are facts, not averages.</span>
+  <span>
+    <b style="color:{ch};">{home} ×{mult['home']:.3f}</b> <span style="color:{DIM};">{th}</span>
+    &nbsp;·&nbsp;
+    <b style="color:{ca};">{away} ×{mult['away']:.3f}</b> <span style="color:{DIM};">{ta}</span>
+  </span>
+</div>
+"""

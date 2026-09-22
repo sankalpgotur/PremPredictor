@@ -12,7 +12,7 @@ from count_model import (MARKETS, FORM_WINDOW, load_match_data, load_count_model
                          predict_market, predict_result, _long)
 from leagues import LEAGUES, DEFAULT_LEAGUE, label as league_label, has_referee
 from player_data import PLAYERS_PATH, load as load_players, league_players
-from player_model import PLAYER_MARKETS, market_players
+from player_model import PLAYER_MARKETS, market_players, squad_names
 
 st.set_page_config(page_title="Match Model Lab", page_icon="📊", layout="wide")
 
@@ -171,6 +171,37 @@ for col, key in zip(cols, MARKETS):
 market_key = st.session_state["market"]
 r = results[market_key]
 
+# ----------------------------------------------------------------- lineup
+st.session_state.setdefault("xi", {})
+lgp_ctl = league_players(players, league)
+if lgp_ctl is not None:
+    with st.expander("Team news — enter the starting XI once it is published", expanded=False):
+        st.caption("Leave blank to use usage averages. Naming an XI replaces "
+                   "guessed minutes with facts and reweights the whole page.")
+        for side in (home, away):
+            names = squad_names(lgp_ctl, side)
+            st.markdown(f"**{side}**")
+            a1, a2 = st.columns([3, 2])
+            start = a1.multiselect(f"starting XI · {side}", names,
+                                   default=st.session_state["xi"].get(f"{side}_start", []),
+                                   max_selections=11, key=f"ms_start_{side}")
+            bench = a2.multiselect(f"substitutes · {side}", [n for n in names if n not in start],
+                                   default=[b for b in st.session_state["xi"].get(f"{side}_bench", [])
+                                            if b not in start],
+                                   key=f"ms_bench_{side}")
+            ret = st.multiselect(f"returning from a layoff · {side}", start + bench,
+                                 default=[x for x in st.session_state["xi"].get(f"{side}_ret", [])
+                                          if x in start + bench],
+                                 key=f"ms_ret_{side}",
+                                 help="Caps minutes at 65 and shades the per-90 rate by 8%. "
+                                      "These are stated assumptions, not fitted effects.")
+            st.session_state["xi"][f"{side}_start"] = start
+            st.session_state["xi"][f"{side}_bench"] = bench
+            st.session_state["xi"][f"{side}_ret"] = ret
+        if st.button("Clear team news", use_container_width=True):
+            st.session_state["xi"] = {}
+            st.rerun()
+
 # ----------------------------------------------------------------- detail
 left, right = st.columns([2.15, 1])
 
@@ -202,7 +233,15 @@ with left:
         if market_key in ("yellows", "fouls") and ref_stats:
             rf = ref_stats["y_factor" if market_key == "yellows" else "f_factor"]
         lgp = league_players(players, league)
-        out = market_players(lgp, home, away, market_key, r, rf, top=10)
+        xi = st.session_state.get("xi", {})
+        out = market_players(
+            lgp, home, away, market_key, r, rf, top=10,
+            home_xi=xi.get(f"{home}_start"), away_xi=xi.get(f"{away}_start"),
+            home_bench=xi.get(f"{home}_bench"), away_bench=xi.get(f"{away}_bench"),
+            home_returning=xi.get(f"{home}_ret"), away_returning=xi.get(f"{away}_ret"),
+        )
+        st.html(D.lineup_banner(home, away, out["mult"],
+                                active=bool(xi.get(f"{home}_start") or xi.get(f"{away}_start"))))
         _, label, verb = PLAYER_MARKETS[market_key]
         pnote = (
             f"Per-90 rates from {lgp['n_players']} players' {players['season']} "
