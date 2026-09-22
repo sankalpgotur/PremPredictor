@@ -11,7 +11,7 @@ import design as D
 from count_model import (MARKETS, FORM_WINDOW, load_match_data, load_count_model,
                          predict_market, predict_result, _long)
 from leagues import LEAGUES, DEFAULT_LEAGUE, label as league_label, has_referee
-from player_data import load as load_players, league_players
+from player_data import PLAYERS_PATH, load as load_players, league_players
 from player_model import PLAYER_MARKETS, market_players
 
 st.set_page_config(page_title="Match Model Lab", page_icon="📊", layout="wide")
@@ -67,14 +67,34 @@ def get_model():
     return load_count_model()
 
 
-@st.cache_resource
-def get_players():
-    """Missing or stale cache must degrade to "no player view", not crash."""
+def _players_stamp():
+    """mtime+size of players.json, so the cache key changes when it does."""
+    try:
+        st_ = os.stat(PLAYERS_PATH)
+        return (st_.st_mtime_ns, st_.st_size)
+    except OSError:
+        return None
+
+
+@st.cache_resource(show_spinner=False)
+def _load_players_cached(stamp):
+    """Keyed on `stamp` so a rewritten players.json invalidates the cache.
+
+    Caching the failure was a real bug: when new code met an old-format file,
+    the None stuck for the whole process lifetime and every player view
+    silently disappeared, even after the file was fixed.
+    """
+    if stamp is None:
+        return None
     try:
         p = load_players()
         return p if "leagues" in p else None
     except (FileNotFoundError, KeyError, ValueError):
         return None
+
+
+def get_players():
+    return _load_players_cached(_players_stamp())
 
 
 st.html(D.page_css())
